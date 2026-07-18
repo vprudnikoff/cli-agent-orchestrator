@@ -17,18 +17,29 @@ TOOL_MAPPING: Dict[str, Dict[str, List[str]]] = {
     "claude_code": {
         # Everything execution-capable gates with execute_bash — a restricted
         # agent escapes otherwise (observed live in the allowed-tools e2e):
-        # - the native subagent tool spawns a subagent with its own full
-        #   toolset ("the file was created via a delegated subagent that ran
-        #   the write through a shell command"). Claude Code renamed this tool
-        #   `Task` -> `Agent`; both names are denied so the block holds across
-        #   CLI versions (current builds expose only `Agent`, so denying just
-        #   `Task` is a silent no-op);
         # - Monitor runs arbitrary shell scripts in the background ("I used
         #   the Monitor tool" to write the forbidden file);
         # - BashOutput/KillShell are the Bash family's companions.
         # Privilege-equivalence: anything these can do, Bash can too, so
         # profiles allowed execute_bash lose nothing by keeping them.
-        "execute_bash": ["Bash", "BashOutput", "KillShell", "Task", "Agent", "Monitor"],
+        "execute_bash": ["Bash", "BashOutput", "KillShell", "Monitor"],
+        # The native sub-agent launcher, as its own category. A sub-agent spawns
+        # with its own full toolset and can run shell, so it must never be
+        # grantable on its own — `get_disallowed_tools` drops this token unless
+        # execute_bash is also granted, which keeps the original escape closed
+        # (subagent is at most as powerful as bash, never more).
+        #
+        # It is a separate token, rather than folded into execute_bash, so an
+        # orchestrator can keep a real shell while hard-blocking native
+        # sub-agents. That matters when workers must go through CAO: a native
+        # sub-agent runs in-process on the *same* model and is invisible to the
+        # orchestrator, so it silently defeats cross-model review and CAO's
+        # own assign/handoff accounting.
+        #
+        # Claude Code renamed this tool `Task` -> `Agent`; both names are listed
+        # so the block holds across CLI versions (current builds expose only
+        # `Agent`, so denying just `Task` is a silent no-op).
+        "subagent": ["Task", "Agent"],
         "fs_read": ["Read"],
         # NotebookEdit writes .ipynb files — it must gate with fs_write or a
         # write-restricted agent keeps a file-modification path.
@@ -37,11 +48,7 @@ TOOL_MAPPING: Dict[str, Dict[str, List[str]]] = {
         "fs_*": ["Read", "Edit", "Write", "NotebookEdit", "Glob", "Grep"],
         # Network access. WebSearch gates here too: both reach the network and
         # are the agent's exfiltration/SSRF surface, so a profile without
-        # web_fetch loses both. Note: the subagent tool (`Task`/`Agent`) is
-        # deliberately NOT a separate category — it folds into execute_bash
-        # above, because a subagent spawns with its own full toolset and can run
-        # shell; exposing it standalone would let a profile grant subagent
-        # without execute_bash and re-open that escape.
+        # web_fetch loses both.
         "web_fetch": ["WebFetch", "WebSearch"],
     },
     "copilot_cli": {
@@ -165,9 +172,22 @@ def get_disallowed_tools(provider: str, allowed: List[str]) -> List[str]:
     if not mapping:
         return []
 
+    # `subagent` is dependent, not standalone: a native sub-agent spawns with
+    # its own full toolset and can run shell, so granting it without
+    # execute_bash would re-open the very escape the restriction exists to
+    # close. Drop the token unless execute_bash is granted too — this keeps
+    # subagent at most as powerful as bash, never more.
+    effective = list(allowed)
+    if "subagent" in effective and "execute_bash" not in effective:
+        logger.warning(
+            "Ignoring 'subagent' in allowedTools: it requires 'execute_bash'. "
+            "A native sub-agent can run shell, so it is never granted on its own."
+        )
+        effective = [tool for tool in effective if tool != "subagent"]
+
     # Collect all native tools that are allowed
     allowed_native: Set[str] = set()
-    for cao_tool in allowed:
+    for cao_tool in effective:
         if cao_tool.startswith("@"):
             # MCP server references don't map to native tools
             continue

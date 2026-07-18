@@ -445,14 +445,25 @@ MEMORY_ARCHIVE_MAX_GZIP_RATIO = 100  # reject > 100x expansion
 # =============================================================================
 # Built-in role defaults. A role is a named bundle of allowedTools.
 # Users can define custom roles in settings.json under "roles".
-# CAO vocabulary: execute_bash, fs_read, fs_write, fs_list, fs_*, web_fetch,
-# @builtin, @cao-mcp-server.
+# CAO vocabulary: execute_bash, subagent, fs_read, fs_write, fs_list, fs_*,
+# web_fetch, @builtin, @cao-mcp-server.
 # web_fetch is granted only to developer: supervisor/reviewer are intentionally
 # kept off the network (no WebFetch/WebSearch), shrinking their exfiltration surface.
+# subagent likewise: developer keeps the native sub-agent tool, so the default
+# behaviour is unchanged. An orchestrator opts out by setting an explicit
+# allowedTools that includes execute_bash but not subagent — that is the only
+# way to keep a shell while hard-blocking native sub-agents.
 ROLE_TOOL_DEFAULTS = {
     "supervisor": ["@cao-mcp-server", "fs_read", "fs_list"],
     "reviewer": ["@builtin", "fs_read", "fs_list", "@cao-mcp-server"],
-    "developer": ["@builtin", "fs_*", "execute_bash", "web_fetch", "@cao-mcp-server"],
+    "developer": [
+        "@builtin",
+        "fs_*",
+        "execute_bash",
+        "subagent",
+        "web_fetch",
+        "@cao-mcp-server",
+    ],
 }
 
 # Security constraints prepended to system prompts for providers without

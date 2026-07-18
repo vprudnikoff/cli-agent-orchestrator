@@ -2,6 +2,7 @@
 
 import pytest
 
+from cli_agent_orchestrator.constants import ROLE_TOOL_DEFAULTS
 from cli_agent_orchestrator.utils.tool_mapping import (
     format_tool_summary,
     get_disallowed_tools,
@@ -82,10 +83,8 @@ class TestGetDisallowedTools:
         assert "Write" in result
 
     def test_claude_code_developer_allows_all(self):
-        """Developer (fs_*, execute_bash, web_fetch) should not block anything."""
-        result = get_disallowed_tools(
-            "claude_code", ["@builtin", "fs_*", "execute_bash", "web_fetch", "@cao-mcp-server"]
-        )
+        """The developer role default should not block anything."""
+        result = get_disallowed_tools("claude_code", ROLE_TOOL_DEFAULTS["developer"])
         assert result == []
 
     def test_claude_code_reviewer_blocks_write(self):
@@ -219,12 +218,36 @@ class TestClaudeCodeSubagentEscape:
         assert "Write" in disallowed
 
     def test_developer_with_bash_keeps_task(self):
-        disallowed = get_disallowed_tools(
-            "claude_code", ["@builtin", "fs_*", "execute_bash", "web_fetch", "@cao-mcp-server"]
-        )
+        """The developer default grants `subagent`, so the sub-agent stays available."""
+        disallowed = get_disallowed_tools("claude_code", ROLE_TOOL_DEFAULTS["developer"])
         assert "Task" not in disallowed
         assert "Agent" not in disallowed
         assert disallowed == []
+
+    def test_bash_without_subagent_blocks_task(self):
+        """An orchestrator keeps a real shell while native sub-agents stay blocked.
+
+        This is the opt-out: an explicit allowedTools with execute_bash but no
+        `subagent` token. Workers must then come through CAO (assign/handoff)
+        instead of an in-process native sub-agent on the same model.
+        """
+        disallowed = get_disallowed_tools(
+            "claude_code", ["fs_read", "fs_write", "fs_list", "execute_bash", "@cao-mcp-server"]
+        )
+        assert "Task" in disallowed
+        assert "Agent" in disallowed
+        # Bash itself — and its companions — stay available.
+        assert "Bash" not in disallowed
+        assert "BashOutput" not in disallowed
+        assert "KillShell" not in disallowed
+        assert "Monitor" not in disallowed
+
+    def test_subagent_without_bash_is_ignored(self):
+        """`subagent` is dependent: granting it alone must not hand back the escape."""
+        disallowed = get_disallowed_tools("claude_code", ["fs_read", "subagent"])
+        assert "Task" in disallowed
+        assert "Agent" in disallowed
+        assert "Bash" in disallowed
 
     def test_unrestricted_star_keeps_everything(self):
         assert get_disallowed_tools("claude_code", ["*"]) == []
